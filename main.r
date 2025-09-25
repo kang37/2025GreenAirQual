@@ -26,7 +26,6 @@ extract_station_metadata <- function(file_path) {
     latitude = as.numeric(header_parts[3])
   )
 }
-
 # 获取所有txt文件的文件名列表。
 file_list <- list.files(
   path = "data_raw/meteo_data_1961-2023",
@@ -39,32 +38,52 @@ meteo_station <- map_dfr(file_list, extract_station_metadata) %>%
   # 转换为 sf 对象。
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
 
-# 找到各污染站点距离最近的气象点的索引，即行号。
-nearest_index <- st_nearest_feature(x = pollution_data, y = meteo_station)
+# 函数：找到距一个点数据最近的另一个点数据的点，并计算该最近距离。
+pair_near_point <- function(point_x, point_y) {
+  # 找到各污染站点距离最近的气象点的索引，即行号。
+  nearest_index <- st_nearest_feature(x = point_x, y = point_y)
 
-# 计算污染站点到最近的气象站点的距离。
-distances <- st_distance(
-  x = pollution_data,
-  y = meteo_station[nearest_index, ], # 只使用最近的气象站点子集。
-  by_element = TRUE # 确保只计算按行配对元素，即每个点到其最近邻点的距离。
-)
+  # 计算污染站点到最近的气象站点的距离。
+  distances <- st_distance(
+    x = point_x,
+    y = point_y[nearest_index, ], # 只使用最近的气象站点子集。
+    by_element = TRUE # 确保只计算按行配对元素，即每个点到其最近邻点的距离。
+  )
 
-# 将距离结果添加到污染站点数据框中。
-pollution_near_meteo <-
+  # 将距离结果添加到污染站点数据框中。
   # 将最近天气站点ID添加到污染站点数据中。
-  pollution_data %>%
-  bind_cols(
-    # 距离污染站点最近的天气站点ID。
-    meteo_station %>%
-      st_drop_geometry() %>%
-      slice(nearest_index) %>%
-      select(near_meteo_stat_id = meteo_stat_id)
-  ) %>%
-  # 将距离由默认为单位米转换为公里。
-  mutate(dist_to_meteo = as.numeric(distances) / 1000)
+    point_x %>%
+    bind_cols(
+      # 距离污染站点最近的天气站点ID。
+      point_y %>%
+        st_drop_geometry() %>%
+        slice(nearest_index) %>%
+        select(near_meteo_stat_id = meteo_stat_id)
+    ) %>%
+    # 将距离由默认为单位米转换为公里。
+    mutate(dist_to_meteo = as.numeric(distances) / 1000) %>%
+      return()
+}
+pollution_near_meteo <- pair_near_point(pollution_data, meteo_station)
 
 # 配对分析。
 # 小于一定距离的配对站点数。
 ggplot(pollution_near_meteo) +
   geom_histogram(aes(dist_to_meteo))
 sum(pollution_near_meteo$dist_to_meteo <= 1)
+
+# 省控站点情况分析。
+# 省污染站点。
+prov_pollut_stat <- read.csv("data_raw/prolonlat_filtered.csv") %>%
+  rename_with(~ gsub("\\.", "_", .x)) %>%
+  # Bug: 去数据重复行。
+  distinct() %>%
+  st_as_sf(coords = c("lon_site", "lat_site"), crs = 4326)
+# 距省污染站点最近的天气站点。
+prov_pollut_near_meteo <- pair_near_point(prov_pollut_stat, meteo_station)
+
+# 配对站点距离分布情况。
+ggplot(prov_pollut_near_meteo) +
+  geom_histogram(aes(dist_to_meteo))
+sum(prov_pollut_near_meteo$dist_to_meteo <= 0.1)
+
