@@ -35,8 +35,7 @@ file_list <- list.files(
   .[!grepl("sta_lonlat_china.txt", .)]
 # 循环处理所有文件并合并为一个表格。
 meteo_station <- map_dfr(file_list, extract_station_metadata) %>%
-  # 转换为 sf 对象。
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
 
 # 函数：找到距一个点数据最近的另一个点数据的点，并计算该最近距离。
 pair_near_point <- function(point_x, point_y) {
@@ -78,7 +77,7 @@ prov_pollut_stat <- read.csv("data_raw/prolonlat_filtered.csv") %>%
   rename_with(~ gsub("\\.", "_", .x)) %>%
   # Bug: 去数据重复行。
   distinct() %>%
-  st_as_sf(coords = c("lon_site", "lat_site"), crs = 4326)
+  st_as_sf(coords = c("lon_site", "lat_site"), crs = 4326, remove = FALSE)
 # 距省污染站点最近的天气站点。
 prov_pollut_near_meteo <- pair_near_point(prov_pollut_stat, meteo_station)
 
