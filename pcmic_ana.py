@@ -75,14 +75,14 @@ def my_pcmci(mar_dv, var_names, tau_min, pc_alpha, verbosity, period_id):
         label_fontsize=5,
         show_colorbar=0
     );
-    plt.savefig(f"data_proc/{period_id}.png", dpi=800)
+    plt.savefig(f"data_proc/pcmci_2/{period_id}.png", dpi=800)
     plt.close()
     
     return results
 
 pc_alpha = 0.05
 var_names = [
-    "o3_8h",
+    "pm2_5_avg",
     "tavg",
     "rh", 
     "precip",
@@ -91,9 +91,9 @@ var_names = [
 
 # 循环分析
 # %%
-for res_stat_id_unique in mar_dv['res_stat_id'].unique(): 
+for res_stat_id_unique in mar_dv['res_stat_grp_id'].unique(): 
     my_pcmci(
-            mar_dv=mar_dv[mar_dv['res_stat_id'] == res_stat_id_unique],
+            mar_dv=mar_dv[mar_dv['res_stat_grp_id'] == res_stat_id_unique],
             var_names=var_names,
             tau_min=1,
             pc_alpha=pc_alpha,
