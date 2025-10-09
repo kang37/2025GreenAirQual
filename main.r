@@ -366,3 +366,14 @@ pollute_meteo_tar_interpo %>%
     legend.position = "bottom"
   )
 
+# 筛选：只保留连续时间段长的。
+# 各站点连续时间段分布。
+pollute_meteo_tar_interpo %>%
+  select(res_stat_id, unique_segment_id, segment_length) %>%
+  distinct() %>%
+  ggplot() +
+  geom_density(aes(segment_length, col = res_stat_id))
+pollute_meteo_tar_interpo_filt <- pollute_meteo_tar_interpo %>%
+  filter(segment_length >= 30, is_complete_segment) %>%
+  mutate(res_stat_seg_id = paste(res_stat_id, unique_segment_id, sep = "-"))
+# write.csv(pollute_meteo_tar_interpo_filt, "df_segments.csv", row.names = F)
