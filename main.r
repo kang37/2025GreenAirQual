@@ -132,28 +132,60 @@ ndvi_data <- rbind(
 ) %>%
   tibble() %>%
   select(-"system.index", -".geo", -buffer) %>%
-  mutate(date = ymd_hms(date), date = as_date(date)) %>%
+  mutate(
+    date = ymd_hms(date),
+    date = as_date(date),
+    meteo_stat_id = as.character(meteo_stat_id)
+  ) %>%
   # 每天不止一个数值，因此取平均值。
   group_by(meteo_stat_id, date) %>%
   summarise(ndvi = mean(ndvi), .groups = "drop")
 
-# 计算NDVI周平均值。
-ndvi_weekly_avg <- ndvi_data %>%
-  # 1. 确保日期类型正确，并提取年份和周数
-  mutate(
-    date = as_date(date), # 确保日期格式正确
-    # 使用 isoweek() 可以避免年份跨越时周数计算的歧义
-    year = year(date),
-    week = isoweek(date)
-  ) %>%
-  # 2. 按站点、年份和周数进行分组
-  group_by(meteo_stat_id, year, week) %>%
-  # 3. 计算周平均 NDVI
-  summarise(
-    # 取该周所有 Landsat 观测值的平均 NDVI
-    ndvi_weekly_mean = mean(ndvi, na.rm = TRUE),
-    .groups = 'drop'
-  )
+# 函数：
+#' 计算数据集中指定多列的周平均值
+#'
+#' @param data 要处理的 data.frame 或 tibble。
+#' @param value_cols 一个包含要计算平均值的列名的**字符向量** (例如: c("ndvi", "air_temp"))。
+#' @param date_col 包含日期的列的名称 (必须是日期或可转换为日期的格式，**传入字符串**)。
+#' @param group_id_col (可选) 用于分组的 ID 列的名称 (**传入字符串**)。
+#'
+#' @return 一个新的 data.frame/tibble，包含 'year', 'week' 和所有计算出的周平均值列。
+#'
+calc_week_avg <- function(data, value_cols, date_col = "date", group_id_col) {
+  # 1. 提取日期、年份和周数 (使用 !!sym() 确保字符串被识别为列名)
+  df_processed <- data %>%
+    mutate(
+      # 1.1 确保日期类型正确
+      !!sym(date_col) := as_date(!!sym(date_col)),
+      # 1.2 提取年份和周数
+      year = year(!!sym(date_col)),
+      week = isoweek(!!sym(date_col))
+    )
+
+  # 2. 设置分组变量
+  grouping_vars <- c("year", "week")
+  if (!is.null(group_id_col)) {
+    # 如果 group_id_col 被提供，将其字符串加入分组变量
+    grouping_vars <- c(group_id_col, grouping_vars)
+  }
+
+  # 3. 按分组计算多列的平均值
+  df_result <- df_processed %>%
+    group_by(!!!syms(grouping_vars)) %>% # 使用 !!!syms 动态分组
+    summarise(
+      across(
+        .cols = all_of(value_cols),
+        .fns = list(weekly_mean = ~mean(.x, na.rm = TRUE)),
+        .names = "{col}"
+      ),
+      .groups = 'drop'
+    )
+
+  return(df_result)
+}
+
+# Bug.
+var_target <- c(var_meteo, var_pollute, "ndvi")
 
 # 将污染数据、气象数据、NDVI数据组合起来。
 pollute_meteo_tar <- prov_pollut_near_meteo_tar %>%
@@ -185,56 +217,57 @@ pollute_meteo_tar <- prov_pollut_near_meteo_tar %>%
   select(-year, -month, -day) %>%
   relocate(date, .before = 1) %>%
   mutate(year = year(date)) %>%
-  na.omit() %>%
+  # 加入NDVI数值。
+  left_join(
+    ndvi_data,
+    by = c("date", "near_meteo_stat_id" = "meteo_stat_id")
+  ) %>%
   # 对每个配对赋予一个独特编号。
-  mutate(res_stat_id = paste(near_meteo_stat_id, pollut_stat_id, sep = "-"), .before = 1) %>%
+  mutate(
+    res_stat_id = paste(near_meteo_stat_id, pollut_stat_id, sep = "-"),
+    .before = 1
+  ) %>%
   # 计算周平均值。
   calc_week_avg(
-    data = ., value_cols = c(var_meteo, var_pollute), group_id_col = "res_stat_id"
+    data = ., value_cols = c(var_meteo, var_pollute, "ndvi"),
+    group_id_col = "res_stat_id"
+  ) %>%
+  # 补全日期。
+  complete(
+    res_stat_id,
+    year,
+    week = 1:53,
+    fill = as.list(setNames(rep(NA, length(var_target)), var_target))
+  ) %>%
+  mutate(
+    year_week = paste0(year, str_pad(week, width = 2, pad = "0"))
+  ) %>%
+  arrange(res_stat_id, year, week)
+
+# 查看数据完整性。
+# 查看单列数据完整性。
+pollute_meteo_tar %>%
+  ggplot(aes(x = year_week, y = as.character(res_stat_id))) +
+  geom_tile(aes(fill = !is.na(tavg)), color = "white", linewidth = 0.1) +
+  theme(axis.text.x = element_text(angle = 90))
+# 查看多列数据完整性。
+pollute_meteo_tar %>%
+  # 创建一个综合指标列 'all_vars_present'
+  mutate(
+    # if_all() 检查 var_target 列表中的所有列是否都满足给定的条件
+    # 条件是 !is.na()，即“非缺失”
+    all_vars_present = if_all(all_of(var_target), ~!is.na(.))
+  ) %>%
+  # 可视化：将综合指标映射到填充颜色
+  ggplot(aes(x = year_week, y = as.character(res_stat_id))) +
+  # 使用综合指标 'all_vars_present' 填充颜色
+  geom_tile(aes(fill = all_vars_present), color = "white", linewidth = 0.1) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 6),
+    axis.text.y = element_text(size = 8),
+    legend.position = "bottom"
   )
 
-# 加入NDVI数据。
-pollute_meteo_ndvi_tar <- pollute_meteo_tar %>%
-  # 加入NDVI数据。
-  # 4. 加入周平均 NDVI 数据 (替换了原有的 left_join(ndvi_data, ...))
-  left_join(
-    ndvi_weekly_avg %>% mutate(meteo_stat_id = as.character(meteo_stat_id)),
-    by = c("near_meteo_stat_id" = "meteo_stat_id", "year", "week")
-  ) %>%
-  # 移除用于合并的周标识符
-  na.omit() %>%
-  arrange(res_stat_id, date)
-# write_csv(pollute_meteo_ndvi_tar, "pollute_meteo_ndvi_tar.csv")
 
-# 仅保留连续日期长于30天的数据。
-pollute_meteo_ndvi_tar_filt <- pollute_meteo_ndvi_tar %>%
-  # 按站点分组
-  group_by(res_stat_id) %>%
-  # 识别连续观测期
-  mutate(
-    # 计算当前日期与前一个日期的差值
-    date_diff = as.numeric(date - lag(date, default = first(date))),
-    # 识别间断点：如果日期差大于 1 天，则认为这是一个新的连续期
-    # cumsum(date_diff > 1) 会为每个连续期生成一个唯一的 ID
-    # 注意：我们将第一个日期也视为一个新组的开始 (0)
-    # R 中的逻辑：TURE 视为 1，FALSE 视为 0
-    group_id = cumsum(date_diff > 1)
-  ) %>%
-  # 重新分组：按站点和连续期 ID
-  group_by(res_stat_id, group_id) %>%
-  # 计算每个连续期的时间跨度 (天数)
-  mutate(
-    period_length = as.numeric(max(date) - min(date)) + 1
-  ) %>%
-  # 4. 筛选：仅保留周期长度大于阈值 (30天) 的所有记录
-  filter(period_length >= 30) %>%
-  # 移除用于计算的临时列
-  ungroup() %>%
-  select(-date_diff) %>%
-  # 按站点和日期排序最终数据
-  arrange(res_stat_id, date) %>%
-  # Bug.
-  rename(ndvi = ndvi_weekly_mean) %>%
-  mutate(res_stat_grp_id = paste(res_stat_id, group_id, sep = "-"))
-# write.csv(pollute_meteo_ndvi_tar_filt, "df_segments.csv", row.names = F)
 
