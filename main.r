@@ -6,6 +6,8 @@ library(purrr)
 library(readr)
 library(mapview)
 library(lubridate)
+library(zoo)
+library(imputeTS)
 
 # 测试变量 ----
 var_meteo <- c("tmax", "tmin", "tavg", "rh", "precip")
@@ -269,5 +271,98 @@ pollute_meteo_tar %>%
     legend.position = "bottom"
   )
 
+# 插值 ----
+# 插值函数。
+interpo_linear <- function(data, value_cols, max_gap = 3) {
 
+  # 1. 按站点分组
+  imputed_data <- data %>%
+    group_by(res_stat_id) %>%
+
+    # 2. 对所有目标列应用条件插值
+    summarise(
+      across(
+        .cols = all_of(value_cols),
+        .fns = ~{
+          # 使用 na_interpolation() 进行线性插值 (method="linear" 是默认值)
+          # maxgap 参数：只对连续缺失长度小于或等于 max_gap 的部分进行插值
+          na_interpolation(., maxgap = max_gap)
+        },
+        # .names = "{.col}" 保持列名不变
+        .names = "{.col}"
+      ),
+      # 保持分组列 (year, week, year_week)
+      # 技巧：如果我们将分组列也放在 summarise 之外，则需要在 mutate 或 transmute 中操作。
+      # 最佳实践是使用 bind_cols() 或在 mutate 中操作
+      .groups = "drop" # 取消分组
+    )
+
+  # 3. 将插值后的值列与原始数据中的分组/时间列合并
+  # 注意：由于 summarise 只输出了值列，我们需要将时间/站点列重新绑定
+  # 确保重新绑定的顺序是正确的（因为我们只按 res_stat_id 分组）
+  # 因此，更推荐在 mutate/transmute 中操作。
+
+  # **使用 transmute/mutate 进行插值的替代方案 (更安全):**
+  imputed_data_safe <- data %>%
+    group_by(res_stat_id) %>%
+    mutate(
+      across(
+        .cols = all_of(value_cols),
+        .fns = ~na_interpolation(., maxgap = max_gap),
+        .names = "{.col}" # 保持列名不变
+      )
+    ) %>%
+    ungroup()
+
+  return(imputed_data_safe)
+}
+# 插值。
+pollute_meteo_tar_interpo <- interpo_linear(
+  data = pollute_meteo_tar,
+  value_cols = var_target,
+  max_gap = 3 # 间隔不大于 3 周
+) %>%
+  # 对每个站，根据连续时间段进行分段，并统计每段连续天数。
+  # 步骤 2: 计算每一行的综合完整性指标
+  # ----------------------------------------------------
+mutate(
+  # 检查所有目标列是否都非 NA (TRUE = 完整)
+  is_complete_segment = if_all(all_of(var_target), ~!is.na(.))
+) %>%
+
+  # ----------------------------------------------------
+# 步骤 3: 按站点和完整性变化创建独立编号
+# ----------------------------------------------------
+group_by(res_stat_id) %>% # 在每个站点内独立处理
+  mutate(
+    # 逻辑：当 'is_complete_segment' 状态发生变化时，生成 TRUE。
+    # cumsum() 会对这些 TRUE (1) 进行累加，从而创建独立编号。
+    # unique_segment_id 从 1 开始编号
+    unique_segment_id = cumsum(is_complete_segment != lag(is_complete_segment, default = FALSE))
+  ) %>%
+  # ----------------------------------------------------
+# 步骤 4: 计算每个独立编号组的总长度
+# ----------------------------------------------------
+group_by(res_stat_id, unique_segment_id) %>% # 按站点和新生成的编号分组
+  mutate(
+    segment_length = n() # n() 计算当前组中的行数
+  ) %>%
+  ungroup()
+# 插值后数据完整性。
+pollute_meteo_tar_interpo %>%
+  mutate(
+    # if_all() 检查 var_target 列表中的所有列是否都满足给定的条件
+    # 条件是 !is.na()，即“非缺失”
+    all_vars_present = if_all(all_of(var_target), ~!is.na(.))
+  ) %>%
+  # 可视化：将综合指标映射到填充颜色
+  ggplot(aes(x = year_week, y = as.character(res_stat_id))) +
+  # 使用综合指标 'all_vars_present' 填充颜色
+  geom_tile(aes(fill = all_vars_present), color = "white", linewidth = 0.1) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 6),
+    axis.text.y = element_text(size = 8),
+    legend.position = "bottom"
+  )
 
