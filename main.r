@@ -4,6 +4,7 @@ library(dplyr)
 library(ggplot2)
 library(purrr)
 library(readr)
+library(mapview)
 
 # 国家空气污染站点。
 pollution_data <- read.csv("data_raw/airquality_stations_locations.csv") %>%
@@ -75,8 +76,11 @@ sum(pollution_near_meteo$dist_to_meteo <= 1)
 # 省污染站点。
 prov_pollut_stat <- read.csv("data_raw/prolonlat_filtered.csv") %>%
   rename_with(~ gsub("\\.", "_", .x)) %>%
-  # Bug: 去数据重复行。
+  select(lon_site, lat_site) %>%
+  # Bug: 删除重复行，每个站点保留一行。
   distinct() %>%
+  # 添加ID。
+  mutate(pollut_stat_id = row_number(), .before = 1) %>%
   st_as_sf(coords = c("lon_site", "lat_site"), crs = 4326, remove = FALSE)
 # 距省污染站点最近的天气站点。
 prov_pollut_near_meteo <- pair_near_point(prov_pollut_stat, meteo_station)
@@ -84,5 +88,23 @@ prov_pollut_near_meteo <- pair_near_point(prov_pollut_stat, meteo_station)
 # 配对站点距离分布情况。
 ggplot(prov_pollut_near_meteo) +
   geom_histogram(aes(dist_to_meteo))
-sum(prov_pollut_near_meteo$dist_to_meteo <= 0.1)
+sum(prov_pollut_near_meteo$dist_to_meteo <= 0.5)
+
+# 目标省污染站点和气象站点。
+prov_pollut_near_meteo_tar <- prov_pollut_near_meteo %>%
+  filter(dist_to_meteo <= 0.5)
+mapview(prov_pollut_near_meteo_tar, col.regions = "blue") +
+  mapview(
+    meteo_station %>%
+      filter(meteo_stat_id %in% prov_pollut_near_meteo_tar$near_meteo_stat_id),
+    col.regions = "red"
+  )
+
+# 配对站点的气象数据。
+
+
+# 配对站点的污染数据。
+
+
+
 
